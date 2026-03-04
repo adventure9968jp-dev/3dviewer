@@ -2,7 +2,8 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- 【關鍵修復】加入 viewport-fit=cover 與縮放限制，徹底消除系統頂部的強制遮蔽/瀏海黑邊 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>3D 模型互動檢視器</title>
     <!-- 引入 Tailwind CSS 美化 UI -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -15,9 +16,10 @@
     <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FBXLoader.js"></script>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #1a1a1a; }
+        /* 【關鍵修復】將 height 改為 100%，避免 100vh 在行動裝置上因網址列造成的計算誤差與頂部黑塊 */
+        html, body { margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; background-color: #1a1a1a; }
         /* 調整排版為上下分割，完美適應手機螢幕 */
-        body { display: flex; flex-direction: column; height: 100vh; width: 100vw; }
+        body { display: flex; flex-direction: column; }
         #canvas-container { flex: 1; position: relative; width: 100%; overflow: hidden; touch-action: none; }
         #ui-panel { flex-shrink: 0; padding-bottom: env(safe-area-inset-bottom); }
         canvas { display: block; outline: none; }
@@ -53,9 +55,9 @@
             <!-- 開關區縮小並與匯入按鈕並排 -->
             <div class="flex gap-4 text-gray-300 text-[12px] flex-shrink-0 items-center border-l border-gray-700 pl-3">
                 <!-- 【新增】平行投影切換開關 -->
-                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="cameraToggle" class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 平行投影</label>
-                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="edgeToggle" checked class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 輪廓線</label>
-                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="xrayToggle" class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> X-Ray透視</label>
+                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="cameraToggle" class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 📐 平行投影</label>
+                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="edgeToggle" checked class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 🔲 輪廓線</label>
+                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="xrayToggle" class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 👁️ X-Ray透視</label>
             </div>
         </div>
 
@@ -71,7 +73,7 @@
 
         <!-- 第三排：操作提示 -->
         <div class="mt-1.5 text-center text-[11px] text-gray-500">
-            單指：旋轉視角 &nbsp;|&nbsp; 雙指捏合：縮放 &nbsp;|&nbsp; 雙指滑動：平移
+            👆 單指：旋轉視角 &nbsp;|&nbsp; ✌️ 雙指捏合：縮放 &nbsp;|&nbsp; ✌️ 雙指滑動：平移
         </div>
     </div>
 
@@ -199,7 +201,7 @@
             // 【關鍵修復 1：重置狀態】清空 input 的值。這樣即使您連續匯入「同一個檔名」的檔案，也能100%觸發載入動作！
             event.target.value = '';
 
-            // 【關鍵修復 2：深度清理】清除前一個模型時，徹底釋放 GPU 記憶體，防止手機瀏覽器記憶體耗盡而無反應
+            // 【關鍵修復 2：極致深度清理】除了幾何體與材質，必須徹底清理最佔 GPU 記憶體的「貼圖 (Textures)」
             if (currentModel) {
                 scene.remove(currentModel);
                 currentModel.traverse(function(child) {
@@ -207,13 +209,18 @@
                     if (child.geometry) {
                         child.geometry.dispose();
                     }
-                    // 銷毀材質與貼圖
+                    // 銷毀材質與所有關聯貼圖
                     if (child.material) {
-                        if (Array.isArray(child.material)) {
-                            child.material.forEach(mat => mat.dispose());
-                        } else {
-                            child.material.dispose();
-                        }
+                        const materials = Array.isArray(child.material) ? child.material : [child.material];
+                        materials.forEach(mat => {
+                            // 遍歷材質的所有屬性，找出貼圖並徹底釋放
+                            for (const key in mat) {
+                                if (mat[key] && mat[key].isTexture) {
+                                    mat[key].dispose();
+                                }
+                            }
+                            mat.dispose();
+                        });
                     }
                 });
                 currentModel = null;
@@ -224,20 +231,24 @@
                 const loader = new THREE.GLTFLoader();
                 loader.load(objectUrl, function(gltf) {
                     processLoadedModel(gltf.scene);
+                    URL.revokeObjectURL(objectUrl); // 【關鍵修復】載入完成後立即釋放暫存檔案記憶體
                 }, undefined, function(error) {
                     console.error('GLTF 載入錯誤:', error);
                     alert('載入模型時發生錯誤。');
                     loadingIndicator.style.display = 'none';
+                    URL.revokeObjectURL(objectUrl);
                 });
             } else if (extension === 'fbx') {
                 // 【新增 FBX 處理邏輯】
                 const loader = new THREE.FBXLoader();
                 loader.load(objectUrl, function(object) {
                     processLoadedModel(object);
+                    URL.revokeObjectURL(objectUrl);
                 }, undefined, function(error) {
                     console.error('FBX 載入錯誤:', error);
                     alert('載入模型時發生錯誤。');
                     loadingIndicator.style.display = 'none';
+                    URL.revokeObjectURL(objectUrl);
                 });
             } else if (extension === 'stl') {
                 const loader = new THREE.STLLoader();
@@ -255,14 +266,17 @@
                     const mesh = new THREE.Mesh(geometry, material);
                     
                     processLoadedModel(mesh);
+                    URL.revokeObjectURL(objectUrl);
                 }, undefined, function(error) {
                     console.error('STL 載入錯誤:', error);
                     alert('載入模型時發生錯誤。');
                     loadingIndicator.style.display = 'none';
+                    URL.revokeObjectURL(objectUrl);
                 });
             } else {
                 alert('不支援的檔案格式，請匯入 .glb, .gltf, .stl 或 .fbx 檔案。');
                 loadingIndicator.style.display = 'none';
+                URL.revokeObjectURL(objectUrl);
             }
         });
 
@@ -321,6 +335,15 @@
             const size = box.getSize(new THREE.Vector3());
             const maxDim = Math.max(size.x, size.y, size.z);
 
+            // 【防呆機制】防止載入空檔案或異常模型導致畫面崩潰
+            if (maxDim === 0 || !isFinite(maxDim)) {
+                alert('模型尺寸異常或無實體數據，無法顯示。');
+                loadingIndicator.style.display = 'none';
+                scene.remove(currentModel);
+                currentModel = null;
+                return;
+            }
+
             // 【關鍵升級】將模型等比例縮放至合理大小，避免因尺寸過大超出攝影機範圍
             const targetSize = 10;
             const scale = targetSize / (maxDim || 1);
@@ -341,13 +364,13 @@
             cameraZ *= 1.5; // 加上一點緩衝空間
             optimalCameraDistance = cameraZ; // 儲存此距離
             
-            // 計算平行投影所需的視角寬度
-            frustumSize = targetSize * 1.5;
+            // 【修復】放大平行投影的視椎體空間 (從 1.5 倍提升至 2.5 倍)，徹底消除旋轉時頂部被「隱形天花板」裁切的現象
+            frustumSize = targetSize * 2.5;
             const currentAspect = container.clientWidth / container.clientHeight;
 
-            // 同步更新透視攝影機
+            // 【修復】將攝影機初始高度 (Y軸) 歸零，讓模型完美置中，消除上方的多餘空白
             cameraPersp.far = cameraZ * 10;
-            cameraPersp.position.set(0, targetSize / 2, cameraZ);
+            cameraPersp.position.set(0, 0, cameraZ);
             cameraPersp.updateProjectionMatrix();
 
             // 同步更新平行投影攝影機
@@ -356,11 +379,11 @@
             cameraOrtho.right = frustumSize * currentAspect / 2;
             cameraOrtho.top = frustumSize / 2;
             cameraOrtho.bottom = -frustumSize / 2;
-            cameraOrtho.position.set(0, targetSize / 2, cameraZ);
+            cameraOrtho.position.set(0, 0, cameraZ);
             cameraOrtho.updateProjectionMatrix();
 
             // 更新當前啟用的攝影機與控制器目標
-            camera.position.set(0, targetSize / 2, cameraZ);
+            camera.position.set(0, 0, cameraZ);
             controls.target.set(0, 0, 0);
             controls.update();
 
@@ -480,17 +503,23 @@
             // 步驟 B：渲染右上角的方位指標 (HUD)
             const hudSize = 100; // 指標大小 (100x100 像素)
             const hudX = container.clientWidth - hudSize - 10; // 距離右邊 10px
-            const hudY = container.clientHeight - hudSize - 10; // 距離上方 10px
             
-            renderer.autoClear = false; // 關閉自動清除背景，讓 HUD 完美疊加在主畫面上
-            renderer.clearDepth(); // 僅清除深度，確保指標永遠顯示在最上層不被模型遮擋
-            renderer.setViewport(hudX, hudY, hudSize, hudSize);
-            renderer.setScissor(hudX, hudY, hudSize, hudSize);
+            // 【微調】加大頂部安全距離，從 10 改為 25，避免指標被手機狀態列或實體瀏海干擾
+            const hudY = container.clientHeight - hudSize - 25; 
+            
+            // 【重要】這裡使用 setScissorTest 控制只清除 HUD 區塊的深度，避免任何干擾
             renderer.setScissorTest(true);
+            renderer.setScissor(hudX, hudY, hudSize, hudSize);
+            renderer.setViewport(hudX, hudY, hudSize, hudSize);
+            
+            renderer.autoClear = false; 
+            renderer.clearDepth(); // 僅清除深度，確保指標永遠顯示在最上層
             renderer.render(sceneHUD, cameraHUD);
             renderer.autoClear = true; // 恢復預設
         }
         
+        // 【修復】啟動前強制校正一次螢幕尺寸，避免初次載入時的長寬比計算誤差
+        onWindowResize();
         // 啟動動畫
         animate();
     </script>
