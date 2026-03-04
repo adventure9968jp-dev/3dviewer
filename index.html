@@ -65,8 +65,8 @@
             </button>
             <label class="flex-shrink-0 cursor-pointer bg-emerald-700 hover:bg-emerald-600 text-white text-[13px] font-medium py-1.5 px-3 rounded-lg transition duration-300 shadow flex items-center border border-emerald-600">
                 📂 匯入紀錄
-                <!-- 【升級】支援全新打包的專案檔格式 .3dproj 與舊版 .json -->
-                <input type="file" id="importBtn" accept=".json,.3dproj,.zip" class="hidden" />
+                <!-- 【終極 iOS 修復】加入 application/zip, application/octet-stream, */* 強制繞過 iPhone 檔案總管的反灰限制 -->
+                <input type="file" id="importBtn" accept=".json,.3dproj,.zip,application/zip,application/octet-stream,*/*" class="hidden" />
             </label>
 
             <!-- 開關區縮小並與匯入按鈕並排 -->
@@ -703,7 +703,7 @@
             annotationDiv.addEventListener('pointerdown', (e) => e.stopPropagation());
         }
 
-        // 【終極進化】實作匯出紀錄邏輯 (將 模型 + 註解資料 打包成 .3dproj 專案檔)
+        // 【終極進化】實作匯出紀錄邏輯 (將 模型 + 註解資料 打包成標準 .zip 專案檔)
         document.getElementById('exportBtn').addEventListener('click', () => {
             if (!currentModelArrayBuffer) {
                 alert('請先匯入模型後再進行匯出！');
@@ -717,12 +717,12 @@
                 "annotations.json": fflate.strToU8(annotationsStr)
             });
 
-            // 匯出為自訂副檔名 .3dproj (本質上就是壓縮檔)
+            // 【終極 iOS 修復】匯出為標準的 .zip 副檔名，確保 iPhone 原生檔案總管能夠識別且允許點選
             const blob = new Blob([zippedData], { type: "application/zip" });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'project_record.3dproj';
+            a.download = 'project_record.zip';
             a.click();
             URL.revokeObjectURL(url);
         });
