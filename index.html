@@ -15,6 +15,8 @@
     <!-- 新增 FBX 載入器及其解壓縮依賴庫 fflate -->
     <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FBXLoader.js"></script>
+    <!-- 【新增】引入 CSS2DRenderer，用於渲染跟隨 3D 座標的 HTML 註解標籤 -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/renderers/CSS2DRenderer.js"></script>
     <style>
         /* 【關鍵修復】將 height 改為 100%，避免 100vh 在行動裝置上因網址列造成的計算誤差與頂部黑塊 */
         html, body { margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; background-color: #1a1a1a; }
@@ -50,6 +52,21 @@
                 匯入模型
                 <!-- 【iOS 關鍵修正】加入 model/*, application/octet-stream, */* 以繞過 iPhone 檔案總管的反灰限制 -->
                 <input type="file" id="fileInput" accept=".glb,.gltf,.stl,.fbx,model/*,application/octet-stream,*/*" class="hidden" />
+            </label>
+
+            <!-- 【新增】註解模式開關按鈕 -->
+            <button id="annotateToggle" class="flex-shrink-0 bg-gray-700 hover:bg-gray-600 text-white text-[13px] font-medium py-1.5 px-3 rounded-lg transition duration-300 shadow border border-gray-600">
+                📌 新增註解
+            </button>
+
+            <!-- 【新增】匯出與匯入註解紀錄按鈕 -->
+            <button id="exportBtn" class="flex-shrink-0 bg-emerald-700 hover:bg-emerald-600 text-white text-[13px] font-medium py-1.5 px-3 rounded-lg transition duration-300 shadow border border-emerald-600">
+                💾 匯出紀錄
+            </button>
+            <label class="flex-shrink-0 cursor-pointer bg-emerald-700 hover:bg-emerald-600 text-white text-[13px] font-medium py-1.5 px-3 rounded-lg transition duration-300 shadow flex items-center border border-emerald-600">
+                📂 匯入紀錄
+                <!-- 【升級】支援全新打包的專案檔格式 .3dproj 與舊版 .json -->
+                <input type="file" id="importBtn" accept=".json,.3dproj,.zip" class="hidden" />
             </label>
 
             <!-- 開關區縮小並與匯入按鈕並排 -->
@@ -113,6 +130,15 @@
         renderer.outputEncoding = THREE.sRGBEncoding;
         container.appendChild(renderer.domElement);
 
+        // 【新增】初始化 CSS2DRenderer，用於渲染 HTML 標籤
+        const labelRenderer = new THREE.CSS2DRenderer();
+        labelRenderer.setSize(container.clientWidth, container.clientHeight);
+        labelRenderer.domElement.style.position = 'absolute';
+        labelRenderer.domElement.style.top = '0px';
+        labelRenderer.domElement.style.left = '0px'; // 【關鍵修復】確保 2D 圖層緊貼左側無偏移
+        labelRenderer.domElement.style.pointerEvents = 'none'; // 預設讓點擊穿透，由標籤自身捕捉點擊
+        container.appendChild(labelRenderer.domElement);
+
         // 【新增】方位指標 (HUD) 專屬場景與攝影機設定
         const sceneHUD = new THREE.Scene();
         // 為了確保指示器不變形，使用正交攝影機
@@ -175,6 +201,7 @@
         scene.add(directionalLight2);
 
         // 3. 加入軌跡球控制器 (OrbitControls) 允許任意翻轉放大
+        // 【關鍵修復】將控制器重新綁定回底層的 WebGL 畫布 (renderer.domElement)，恢復旋轉與縮放功能
         const controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true; // 啟用阻尼（慣性），讓旋轉更滑順
         controls.dampingFactor = 0.05;
@@ -182,6 +209,44 @@
         // 建立一個變數來儲存當前的模型，以便載入新模型時可以移除舊的
         let currentModel = null;
         let optimalCameraDistance = 15; // 新增：儲存最佳觀看距離供視角切換使用
+        
+        // 【新增】註解系統相關變數
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        let isAnnotationMode = false;
+        let annotationsList = []; // 儲存 Three.js 的 3D 物件標記，用於畫面清理
+        let annotationsDataList = []; // 【新增】純資料陣列，用於儲存與匯出 (包含位置、文字、圖片Base64)
+        
+        // 【終極進化】儲存原始模型二進位資料，用於打包匯出
+        let currentModelArrayBuffer = null;
+        let currentModelExt = '';
+
+        // 【新增】將清理畫面的邏輯獨立成一個模組函數，方便重複使用
+        function clearCurrentScene() {
+            if (currentModel) {
+                scene.remove(currentModel);
+                currentModel.traverse(function(child) {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) {
+                        const materials = Array.isArray(child.material) ? child.material : [child.material];
+                        materials.forEach(mat => {
+                            for (const key in mat) { if (mat[key] && mat[key].isTexture) mat[key].dispose(); }
+                            mat.dispose();
+                        });
+                    }
+                });
+                currentModel = null;
+            }
+            annotationsList.forEach(obj => {
+                scene.remove(obj);
+                if(obj.element) obj.element.remove();
+            });
+            annotationsDataList.forEach(data => {
+                if(data.cardElement) data.cardElement.remove(); // 清除獨立視窗
+            });
+            annotationsList = [];
+            annotationsDataList = []; // 模型更換時同步清空資料紀錄
+        }
 
         // 4. 處理檔案上傳邏輯
         const fileInput = document.getElementById('fileInput');
@@ -201,37 +266,27 @@
             // 【關鍵修復 1：重置狀態】清空 input 的值。這樣即使您連續匯入「同一個檔名」的檔案，也能100%觸發載入動作！
             event.target.value = '';
 
-            // 【關鍵修復 2：極致深度清理】除了幾何體與材質，必須徹底清理最佔 GPU 記憶體的「貼圖 (Textures)」
-            if (currentModel) {
-                scene.remove(currentModel);
-                currentModel.traverse(function(child) {
-                    // 銷毀幾何體
-                    if (child.geometry) {
-                        child.geometry.dispose();
-                    }
-                    // 銷毀材質與所有關聯貼圖
-                    if (child.material) {
-                        const materials = Array.isArray(child.material) ? child.material : [child.material];
-                        materials.forEach(mat => {
-                            // 遍歷材質的所有屬性，找出貼圖並徹底釋放
-                            for (const key in mat) {
-                                if (mat[key] && mat[key].isTexture) {
-                                    mat[key].dispose();
-                                }
-                            }
-                            mat.dispose();
-                        });
-                    }
-                });
-                currentModel = null;
-            }
+            // 清理舊畫面
+            clearCurrentScene();
 
+            // 【新增】讀取並儲存原始檔案的二進位資料，供未來打包匯出使用
+            currentModelExt = extension;
+            const bufferReader = new FileReader();
+            bufferReader.onload = (e) => { currentModelArrayBuffer = e.target.result; };
+            bufferReader.readAsArrayBuffer(file);
+
+            // 呼叫獨立的模型載入函數
+            executeModelLoad(objectUrl, extension);
+        });
+
+        // 【新增】將載入邏輯獨立，以便支援專案檔(.3dproj)的自動還原
+        function executeModelLoad(objectUrl, extension, pendingAnnotations = null) {
             // 依據副檔名選擇對應的載入器
             if (extension === 'glb' || extension === 'gltf') {
                 const loader = new THREE.GLTFLoader();
                 loader.load(objectUrl, function(gltf) {
-                    processLoadedModel(gltf.scene);
-                    URL.revokeObjectURL(objectUrl); // 【關鍵修復】載入完成後立即釋放暫存檔案記憶體
+                    processLoadedModel(gltf.scene, pendingAnnotations);
+                    URL.revokeObjectURL(objectUrl); // 載入完成後立即釋放暫存檔案記憶體
                 }, undefined, function(error) {
                     console.error('GLTF 載入錯誤:', error);
                     alert('載入模型時發生錯誤。');
@@ -278,10 +333,10 @@
                 loadingIndicator.style.display = 'none';
                 URL.revokeObjectURL(objectUrl);
             }
-        });
+        }
 
         // 5. 處理載入後的模型（自動置中與縮放）
-        function processLoadedModel(object) {
+        function processLoadedModel(object, pendingAnnotations = null) {
             currentModel = object;
             
             // 【新增邊界渲染】為模型中的每個鋼板/實體加上邊界黑線，方便查看搭接處
@@ -392,7 +447,362 @@
             
             // 顯示視角切換按鈕
             document.getElementById('view-buttons').classList.remove('hidden');
+
+            // 【終極進化】如果有待還原的註解資料，在模型載入完畢、位置確立後立刻生成！
+            if (pendingAnnotations) {
+                pendingAnnotations.forEach(data => {
+                    const pos = new THREE.Vector3(data.position.x, data.position.y, data.position.z);
+                    createAnnotation(pos, data);
+                });
+                alert(`成功載入專案檔！包含模型與 ${pendingAnnotations.length} 筆註解。`);
+            }
         }
+
+        // 【新增】實作光線投射與註解建立邏輯
+        const annotateToggleBtn = document.getElementById('annotateToggle');
+        annotateToggleBtn.addEventListener('click', () => {
+            isAnnotationMode = !isAnnotationMode;
+            if (isAnnotationMode) {
+                annotateToggleBtn.classList.replace('bg-gray-700', 'bg-red-600');
+                annotateToggleBtn.classList.replace('hover:bg-gray-600', 'hover:bg-red-500');
+                annotateToggleBtn.innerHTML = '🔴 取消標記';
+                // 開啟 CSS2DRenderer 容器的點擊事件捕捉，以便進行光線投射
+                labelRenderer.domElement.style.pointerEvents = 'auto';
+                container.style.cursor = 'crosshair';
+            } else {
+                annotateToggleBtn.classList.replace('bg-red-600', 'bg-gray-700');
+                annotateToggleBtn.classList.replace('hover:bg-red-500', 'hover:bg-gray-600');
+                annotateToggleBtn.innerHTML = '📌 新增註解';
+                labelRenderer.domElement.style.pointerEvents = 'none';
+                container.style.cursor = 'default';
+            }
+        });
+
+        // 監聽畫布點擊，射出光線尋找點擊的 3D 座標
+        labelRenderer.domElement.addEventListener('pointerdown', (event) => {
+            if (!isAnnotationMode || !currentModel) return;
+
+            // 【終極修復 1：無死角座標換算】使用目標元素的絕對寬高，消除任何因螢幕比例或外層容器造成的計算誤差
+            const rect = labelRenderer.domElement.getBoundingClientRect();
+            mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            // 偵測與模型的交點
+            const intersects = raycaster.intersectObject(currentModel, true);
+
+            // 【終極修復 2：強制過濾干擾物】嚴格限制雷射只能打在「實體網格(isMesh)」上，並且強制過濾掉我們畫的「黑色邊緣線(model_edges)」！
+            const validIntersects = intersects.filter(hit => hit.object.isMesh && hit.object.visible && hit.object.name !== 'model_edges');
+
+            if (validIntersects.length > 0) {
+                // 在第一個「真實且有效的實體表面」交點處產生註解卡片
+                createAnnotation(validIntersects[0].point);
+                
+                // 標記完成後自動關閉標記模式，恢復一般旋轉模式
+                annotateToggleBtn.click();
+            }
+        });
+
+        // 動態生成 HTML 註解卡片函數 (支援載入已有資料)
+        function createAnnotation(position, existingData = null) {
+            // 【升級】尋找目前最大的流水號，使用 parseInt 確保即使使用者自訂了英文名稱，自動數字依然能正確遞增
+            let currentMax = 0;
+            annotationsDataList.forEach(item => {
+                const num = parseInt(item.markerNumber, 10);
+                if (!isNaN(num) && num > currentMax) {
+                    currentMax = num;
+                }
+            });
+
+            // 資料綁定模型
+            const data = existingData || {
+                id: Date.now().toString() + Math.random().toString(),
+                position: { x: position.x, y: position.y, z: position.z },
+                text: '',
+                image: '',
+                markerNumber: (currentMax + 1).toString() // 給予自動遞增的流水號，轉為字串以利編輯
+            };
+            
+            // 相容舊版無編號的紀錄檔 (自動為舊資料補上流水號)
+            if (existingData && !data.markerNumber) {
+                data.markerNumber = (currentMax + 1).toString();
+                currentMax++; // 確保同批次匯入的舊資料號碼會持續遞增
+            }
+
+            // 【底層修復】確保不管是新建還是匯入，資料都會進入目前的狀態庫，保證能夠再次匯出
+            if (!annotationsDataList.find(item => item.id === data.id)) {
+                annotationsDataList.push(data);
+            }
+
+            // ==========================================
+            // 元件 1：3D 空間中的標記按鈕 (受 Three.js 座標控制)
+            // ==========================================
+            const annotationDiv = document.createElement('div');
+            annotationDiv.style.width = '28px';
+            annotationDiv.style.height = '28px';
+            annotationDiv.className = 'relative pointer-events-auto';
+
+            const markerBtn = document.createElement('div');
+            markerBtn.style.width = '100%';
+            markerBtn.style.height = '100%';
+            // 若文字較長(如中文字)，設定 overflow-hidden 避免破壞圓形
+            markerBtn.className = 'bg-blue-600 rounded-full border-2 border-white shadow-[0_0_10px_rgba(0,0,0,0.5)] cursor-pointer flex items-center justify-center text-white font-bold text-sm transition-transform hover:scale-110 z-10 overflow-hidden whitespace-nowrap text-ellipsis px-1';
+            // 將按鈕文字從 'i' 改為專屬流水編號
+            markerBtn.innerText = data.markerNumber;
+            annotationDiv.appendChild(markerBtn);
+
+            // 將 HTML 轉換為 Three.js 的 CSS2D 空間物件
+            const cssObject = new THREE.CSS2DObject(annotationDiv);
+            cssObject.position.set(data.position.x, data.position.y, data.position.z);
+            scene.add(cssObject);
+            annotationsList.push(cssObject);
+
+
+            // ==========================================
+            // 元件 2：獨立於 3D 空間的全螢幕大視窗 (直接掛載於 document.body)
+            // ==========================================
+            const cardDiv = document.createElement('div');
+            // 【終極進化】放棄 Tailwind 動態類別，改用原生 style 屬性確保尺寸與層級 100% 生效！
+            cardDiv.className = 'hidden fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-gray-50 rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] p-5 flex flex-col gap-3 border border-gray-200 overflow-y-auto';
+            
+            // 【極致自適應升級】解放寬度與高度，打造真正的超大編輯視窗！
+            cardDiv.style.width = '95vw';
+            cardDiv.style.maxWidth = '1200px'; // 讓大螢幕也能完美展開，不再侷限於 600px
+            cardDiv.style.height = '85vh'; // 強制展開高度，不再因為內容少而萎縮
+            cardDiv.style.maxHeight = '90vh';
+            cardDiv.style.zIndex = '1000'; // 確保在最上層
+            
+            cardDiv.innerHTML = `
+                <div class="flex justify-between items-center border-b border-gray-200 pb-2 flex-shrink-0">
+                    <div class="flex items-center gap-2 font-bold text-gray-800 text-lg">
+                        📝 標記
+                        <!-- 【升級】將靜態標題轉換為可編輯的輸入框 -->
+                        <input type="text" class="marker-name-input w-20 bg-gray-200 hover:bg-gray-300 border border-transparent focus:border-blue-500 rounded px-2 py-0.5 text-center focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors cursor-text text-blue-700" value="${data.markerNumber}" title="點擊自訂標記名稱/編號" />
+                    </div>
+                    <button class="close-btn text-gray-400 hover:text-red-500 font-bold text-3xl leading-none p-1">✕</button>
+                </div>
+                <input type="file" accept="image/*" class="img-upload flex-shrink-0 text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-blue-100 file:text-blue-700 hover:file:bg-blue-200 w-full cursor-pointer ${data.image ? 'hidden' : ''}"/>
+                
+                <!-- 【極致自適應升級】圖片預覽高度改為 40vh，不再寫死 16rem，讓圖片能根據螢幕高度自適應變大 -->
+                <img class="preview-img ${data.image ? '' : 'hidden'} object-contain shadow-sm flex-shrink-0 transition-all duration-300" style="width: 100%; height: 40vh; background-color: #f3f4f6; cursor: zoom-in; border-radius: 0.5rem; border: 1px solid #e5e7eb;" src="${data.image}" title="點擊放大/縮小" />
+                
+                <textarea class="w-full flex-1 p-3 text-base border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-700 bg-white leading-relaxed" placeholder="請輸入備註...">${data.text}</textarea>
+                <button class="delete-btn flex-shrink-0 w-full bg-red-50 text-red-600 hover:bg-red-100 py-3 rounded-lg text-sm font-bold transition mt-2 border border-red-100">🗑️ 刪除此標記</button>
+            `;
+
+            // 【關鍵綁定】將獨立視窗掛載到最外層的 body，徹底脫鉤！
+            document.body.appendChild(cardDiv);
+            data.cardElement = cardDiv; // 記錄在資料中以便未來清理
+
+            // --- 互動事件綁定 ---
+            // 點擊 3D 空間的圓鈕：在螢幕中央展開獨立視窗
+            markerBtn.addEventListener('click', (e) => {
+                e.stopPropagation(); 
+                cardDiv.classList.remove('hidden');
+            });
+
+            // 【終極修復】圖片全螢幕放大/縮小邏輯 (使用原生 JS 直接操控 CSS，繞過 CDN 編譯限制)
+            const previewImg = cardDiv.querySelector('.preview-img');
+            let isZoomed = false;
+            previewImg.addEventListener('click', (e) => {
+                e.stopPropagation();
+                isZoomed = !isZoomed;
+                if (isZoomed) {
+                    // 強制放大至全螢幕：蓋住所有東西
+                    previewImg.style.position = 'fixed';
+                    previewImg.style.top = '0';
+                    previewImg.style.left = '0';
+                    previewImg.style.width = '100vw';
+                    previewImg.style.height = '100%'; // 使用 100% 配合 fixed 完美適應所有設備
+                    previewImg.style.backgroundColor = 'rgba(0,0,0,0.95)';
+                    previewImg.style.zIndex = '9999';
+                    
+                    // 【關鍵修復】移除所有 padding，把黑邊全部拔掉，讓圖片 100% 榨乾螢幕邊緣！
+                    previewImg.style.padding = '0'; 
+                    previewImg.style.cursor = 'zoom-out';
+                    previewImg.style.borderRadius = '0';
+                    previewImg.style.border = 'none';
+                } else {
+                    // 恢復視窗內原狀大小
+                    previewImg.style.position = 'static';
+                    previewImg.style.width = '100%';
+                    previewImg.style.height = '40vh'; // 對應修改後的自適應高度
+                    previewImg.style.backgroundColor = '#f3f4f6';
+                    previewImg.style.zIndex = 'auto';
+                    previewImg.style.padding = '0';
+                    previewImg.style.cursor = 'zoom-in';
+                    previewImg.style.borderRadius = '0.5rem';
+                    previewImg.style.border = '1px solid #e5e7eb';
+                }
+            });
+
+            // 點擊 X：關閉獨立視窗並還原圖片大小
+            const closeBtn = cardDiv.querySelector('.close-btn');
+            closeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                cardDiv.classList.add('hidden');
+                if (isZoomed) {
+                    isZoomed = false;
+                    previewImg.style.position = 'static';
+                    previewImg.style.width = '100%';
+                    previewImg.style.height = '40vh';
+                    previewImg.style.backgroundColor = '#f3f4f6';
+                    previewImg.style.zIndex = 'auto';
+                    previewImg.style.padding = '0';
+                    previewImg.style.cursor = 'zoom-in';
+                    previewImg.style.borderRadius = '0.5rem';
+                    previewImg.style.border = '1px solid #e5e7eb';
+                }
+            });
+
+            // 【新增】監聽標記名稱/編號的修改，即時更新 3D 空間中的按鈕文字
+            const markerNameInput = cardDiv.querySelector('.marker-name-input');
+            markerNameInput.addEventListener('input', (e) => {
+                const newVal = e.target.value.trim();
+                data.markerNumber = newVal; // 更新資料模型以供匯出
+                // 若清空則顯示驚嘆號防呆，否則即時變更藍色圓鈕文字
+                markerBtn.innerText = newVal !== '' ? newVal : '!'; 
+            });
+
+            // 文字變更時，即時寫入資料模型
+            const textarea = cardDiv.querySelector('textarea');
+            textarea.addEventListener('input', (e) => {
+                data.text = e.target.value;
+            });
+
+            // 刪除邏輯：除了清除 3D 物件，也要把掛載在 body 的大視窗拔除
+            const deleteBtn = cardDiv.querySelector('.delete-btn');
+            deleteBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                scene.remove(cssObject); // 移除 3D 標籤
+                annotationDiv.remove();
+                cardDiv.remove(); // 移除 2D 獨立視窗
+                annotationsList = annotationsList.filter(item => item !== cssObject);
+                annotationsDataList = annotationsDataList.filter(item => item.id !== data.id);
+            });
+
+            // 圖片上傳預覽邏輯
+            const imgUpload = cardDiv.querySelector('.img-upload');
+            imgUpload.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if(file) {
+                    const reader = new FileReader();
+                    reader.onload = (re) => {
+                        const base64Data = re.target.result;
+                        previewImg.src = base64Data;
+                        previewImg.classList.remove('hidden');
+                        imgUpload.classList.add('hidden');
+                        data.image = base64Data;
+                    };
+                    reader.readAsDataURL(file); 
+                }
+            });
+
+            // 防止在卡片上滑動時觸發背後 3D 攝影機的旋轉
+            cardDiv.addEventListener('pointerdown', (e) => e.stopPropagation());
+            annotationDiv.addEventListener('pointerdown', (e) => e.stopPropagation());
+        }
+
+        // 【終極進化】實作匯出紀錄邏輯 (將 模型 + 註解資料 打包成 .3dproj 專案檔)
+        document.getElementById('exportBtn').addEventListener('click', () => {
+            if (!currentModelArrayBuffer) {
+                alert('請先匯入模型後再進行匯出！');
+                return;
+            }
+            
+            // 使用內建的 fflate 庫，將模型二進位檔與註解 JSON 壓縮成一個 ZIP 檔
+            const annotationsStr = JSON.stringify(annotationsDataList);
+            const zippedData = fflate.zipSync({
+                [`model.${currentModelExt}`]: new Uint8Array(currentModelArrayBuffer),
+                "annotations.json": fflate.strToU8(annotationsStr)
+            });
+
+            // 匯出為自訂副檔名 .3dproj (本質上就是壓縮檔)
+            const blob = new Blob([zippedData], { type: "application/zip" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'project_record.3dproj';
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+
+        // 【終極進化】實作匯入紀錄邏輯 (支援自動解壓並還原 模型與註解)
+        document.getElementById('importBtn').addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            event.target.value = ''; // 重置狀態
+
+            const filename = file.name.toLowerCase();
+            const isProjectFile = filename.endsWith('.3dproj') || filename.endsWith('.zip');
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                if (isProjectFile) {
+                    try {
+                        // 解壓縮 .3dproj 檔案
+                        const unzipped = fflate.unzipSync(new Uint8Array(e.target.result));
+                        let modelExt = '';
+                        let modelData = null;
+                        let annotationsData = null;
+
+                        // 從壓縮包內抽出模型與註解資料
+                        for (const key in unzipped) {
+                            if (key === 'annotations.json') {
+                                annotationsData = JSON.parse(fflate.strFromU8(unzipped[key]));
+                            } else if (key.startsWith('model.')) {
+                                modelExt = key.split('.').pop();
+                                modelData = unzipped[key];
+                            }
+                        }
+
+                        if (modelData && annotationsData) {
+                            // 1. 清理舊畫面
+                            clearCurrentScene();
+                            loadingIndicator.style.display = 'block';
+                            
+                            // 2. 還原模型快取資料
+                            currentModelArrayBuffer = modelData.buffer;
+                            currentModelExt = modelExt;
+
+                            // 3. 觸發模型載入，並將註解資料傳入等待還原
+                            const blob = new Blob([modelData]);
+                            const objUrl = URL.createObjectURL(blob);
+                            executeModelLoad(objUrl, modelExt, annotationsData);
+                        } else {
+                            alert('專案檔格式錯誤，找不到模型或註解資料！');
+                        }
+                    } catch (err) {
+                        alert('解析專案檔失敗！檔案可能已損毀。');
+                        console.error(err);
+                    }
+                } else {
+                    // 相容舊版的純 JSON 匯入邏輯
+                    if (!currentModel) {
+                        alert('純 .json 紀錄檔需要先匯入 3D 模型才能掛載標記！');
+                        return;
+                    }
+                    try {
+                        // 使用 TextDecoder 將 ArrayBuffer 轉回字串
+                        const jsonStr = new TextDecoder().decode(e.target.result);
+                        const importedData = JSON.parse(jsonStr);
+                        if (!Array.isArray(importedData)) throw new Error("資料格式錯誤");
+                        
+                        importedData.forEach(data => {
+                            const pos = new THREE.Vector3(data.position.x, data.position.y, data.position.z);
+                            createAnnotation(pos, data);
+                        });
+                        alert(`成功匯入了 ${importedData.length} 筆註解紀錄！`);
+                    } catch(err) {
+                        alert('匯入失敗：這似乎不是有效的註解紀錄檔 (.json)。');
+                        console.error(err);
+                    }
+                }
+            };
+            
+            // 統一使用 ArrayBuffer 讀取，以支援二進位解壓縮
+            reader.readAsArrayBuffer(file);
+        });
 
         // 6. 視窗大小改變時自動適應 (適應手機翻轉或尺寸變化)
         window.addEventListener('resize', onWindowResize, false);
@@ -410,6 +820,8 @@
             cameraOrtho.updateProjectionMatrix();
 
             renderer.setSize(container.clientWidth, container.clientHeight);
+            // 【新增】同步更新 HTML 標籤渲染器的尺寸
+            labelRenderer.setSize(container.clientWidth, container.clientHeight);
         }
 
         // 【新增】監聽攝影機切換開關，實現透視/平行無縫切換
@@ -499,6 +911,9 @@
             renderer.setViewport(0, 0, container.clientWidth, container.clientHeight);
             renderer.setScissorTest(false);
             renderer.render(scene, camera);
+
+            // 【新增】步驟 A-2：渲染 HTML 註解圖層，使其與 3D 空間完美疊合
+            labelRenderer.render(scene, camera);
 
             // 步驟 B：渲染右上角的方位指標 (HUD)
             const hudSize = 100; // 指標大小 (100x100 像素)
