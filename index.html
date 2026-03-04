@@ -52,12 +52,10 @@
 
             <!-- 開關區縮小並與匯入按鈕並排 -->
             <div class="flex gap-4 text-gray-300 text-[12px] flex-shrink-0 items-center border-l border-gray-700 pl-3">
-                <!-- 【關鍵修正】移除預設 checked，讓模型預設保持原始方向 -->
-                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="zUpToggle" class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 🔄 Z軸校正</label>
                 <!-- 【新增】平行投影切換開關 -->
-                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="cameraToggle" class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 📐 平行投影</label>
-                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="edgeToggle" checked class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 🔲 輪廓線</label>
-                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="xrayToggle" class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 👁️ X-Ray透視</label>
+                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="cameraToggle" class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 平行投影</label>
+                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="edgeToggle" checked class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 輪廓線</label>
+                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="xrayToggle" class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> X-Ray透視</label>
             </div>
         </div>
 
@@ -73,7 +71,7 @@
 
         <!-- 第三排：操作提示 -->
         <div class="mt-1.5 text-center text-[11px] text-gray-500">
-            👆 單指：旋轉視角 &nbsp;|&nbsp; ✌️ 雙指捏合：縮放 &nbsp;|&nbsp; ✌️ 雙指滑動：平移
+            單指：旋轉視角 &nbsp;|&nbsp; 雙指捏合：縮放 &nbsp;|&nbsp; 雙指滑動：平移
         </div>
     </div>
 
@@ -272,15 +270,6 @@
         function processLoadedModel(object) {
             currentModel = object;
             
-            // 【關鍵修正】解決 SketchUp (Z向上) 轉 Three.js (Y向上) 的躺平問題
-            const zUpToggle = document.getElementById('zUpToggle');
-            if (zUpToggle && zUpToggle.checked) {
-                // 將模型沿著 X 軸向前翻轉 90 度 (扶正)
-                currentModel.rotation.x = -Math.PI / 2;
-                // 強制更新世界矩陣，確保後續的邊界框計算是基於扶正後的狀態
-                currentModel.updateMatrixWorld(true);
-            }
-
             // 【新增邊界渲染】為模型中的每個鋼板/實體加上邊界黑線，方便查看搭接處
             const edgeToggle = document.getElementById('edgeToggle');
             const showEdges = edgeToggle ? edgeToggle.checked : true;
@@ -449,31 +438,6 @@
                         });
                     }
                 });
-            }
-        });
-
-        // 【新增】監聽 Z軸校正 開關事件，實現即時翻轉與重新置中
-        document.getElementById('zUpToggle').addEventListener('change', function(e) {
-            if (currentModel) {
-                // 1. 先將位置歸零，確保翻轉基準點正確
-                currentModel.position.set(0, 0, 0);
-                
-                // 2. 套用/取消 90度翻轉 (將 Z軸向上 轉為 Y軸向上)
-                currentModel.rotation.x = e.target.checked ? -Math.PI / 2 : 0;
-                currentModel.updateMatrixWorld(true);
-
-                // 3. 重新計算翻轉後的新邊界與中心點
-                const box = new THREE.Box3().setFromObject(currentModel);
-                const center = box.getCenter(new THREE.Vector3());
-
-                // 4. 再次將模型完美置中於畫面
-                currentModel.position.x -= center.x;
-                currentModel.position.y -= center.y;
-                currentModel.position.z -= center.z;
-                
-                // 5. 強制更新畫面與控制器
-                controls.update();
-                renderer.render(scene, camera);
             }
         });
 
