@@ -113,6 +113,55 @@
         renderer.outputEncoding = THREE.sRGBEncoding;
         container.appendChild(renderer.domElement);
 
+        // 【新增】方位指標 (HUD) 專屬場景與攝影機設定
+        const sceneHUD = new THREE.Scene();
+        // 為了確保指示器不變形，使用正交攝影機
+        const cameraHUD = new THREE.OrthographicCamera(-3, 3, 3, -3, 0.1, 100);
+        cameraHUD.position.set(0, 0, 5);
+
+        // 【升級】移除單向 AxesHelper，建立雙向 3D 座標軸線條
+        const matX = new THREE.LineBasicMaterial({ color: 0xff4444 });
+        const matY = new THREE.LineBasicMaterial({ color: 0x44ff44 });
+        const matZ = new THREE.LineBasicMaterial({ color: 0x44aaff });
+        
+        const geoX = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-2, 0, 0), new THREE.Vector3(2, 0, 0)]);
+        const geoY = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, -2, 0), new THREE.Vector3(0, 2, 0)]);
+        const geoZ = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, -2), new THREE.Vector3(0, 0, 2)]);
+        
+        sceneHUD.add(new THREE.Line(geoX, matX));
+        sceneHUD.add(new THREE.Line(geoY, matY));
+        sceneHUD.add(new THREE.Line(geoZ, matZ));
+
+        // 建立精緻的文字標籤函數 (支援中文字體)
+        function makeTextSprite(text, color) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64; canvas.height = 64;
+            const context = canvas.getContext('2d');
+            // 設定支援中文的粗體字型
+            context.font = 'Bold 36px "Microsoft JhengHei", "PingFang TC", sans-serif';
+            context.fillStyle = color;
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            // 將文字畫在正中央
+            context.fillText(text, 32, 32);
+            const texture = new THREE.CanvasTexture(canvas);
+            const spriteMaterial = new THREE.SpriteMaterial({ map: texture, depthTest: false });
+            const sprite = new THREE.Sprite(spriteMaterial);
+            sprite.scale.set(1.5, 1.5, 1);
+            return sprite;
+        }
+        
+        // 【升級】加入六個方位的中文標籤
+        // X 軸 (紅)
+        const spriteE = makeTextSprite('東', '#ff4444'); spriteE.position.set(2.6, 0, 0); sceneHUD.add(spriteE);
+        const spriteW = makeTextSprite('西', '#ff4444'); spriteW.position.set(-2.6, 0, 0); sceneHUD.add(spriteW);
+        // Y 軸 (綠)
+        const spriteT = makeTextSprite('正', '#44ff44'); spriteT.position.set(0, 2.6, 0); sceneHUD.add(spriteT);
+        const spriteB = makeTextSprite('反', '#44ff44'); spriteB.position.set(0, -2.6, 0); sceneHUD.add(spriteB);
+        // Z 軸 (藍)
+        const spriteS = makeTextSprite('南', '#44aaff'); spriteS.position.set(0, 0, 2.6); sceneHUD.add(spriteS);
+        const spriteN = makeTextSprite('北', '#44aaff'); spriteN.position.set(0, 0, -2.6); sceneHUD.add(spriteN);
+
         // 2. 加入燈光以顯示模型細節
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.6); // 環境光
         scene.add(ambientLight);
@@ -448,11 +497,34 @@
             controls.update();
         }
 
-        // 8. 動畫迴圈 (持續渲染場景)
+        // 8. 動畫迴圈 (持續渲染場景與雙重顯示)
         function animate() {
             requestAnimationFrame(animate);
             controls.update(); // 必須在 animate 中呼叫才能有阻尼效果
+            
+            // 【新增】同步 HUD 攝影機視角與主攝影機一致
+            const dir = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
+            cameraHUD.position.copy(dir.multiplyScalar(5));
+            cameraHUD.lookAt(0, 0, 0);
+            cameraHUD.up.copy(camera.up);
+
+            // 步驟 A：渲染主場景 (全螢幕)
+            renderer.setViewport(0, 0, container.clientWidth, container.clientHeight);
+            renderer.setScissorTest(false);
             renderer.render(scene, camera);
+
+            // 步驟 B：渲染右上角的方位指標 (HUD)
+            const hudSize = 100; // 指標大小 (100x100 像素)
+            const hudX = container.clientWidth - hudSize - 10; // 距離右邊 10px
+            const hudY = container.clientHeight - hudSize - 10; // 距離上方 10px
+            
+            renderer.autoClear = false; // 關閉自動清除背景，讓 HUD 完美疊加在主畫面上
+            renderer.clearDepth(); // 僅清除深度，確保指標永遠顯示在最上層不被模型遮擋
+            renderer.setViewport(hudX, hudY, hudSize, hudSize);
+            renderer.setScissor(hudX, hudY, hudSize, hudSize);
+            renderer.setScissorTest(true);
+            renderer.render(sceneHUD, cameraHUD);
+            renderer.autoClear = true; // 恢復預設
         }
         
         // 啟動動畫
