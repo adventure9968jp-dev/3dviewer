@@ -149,9 +149,26 @@
             const extension = filename.split('.').pop();
             const objectUrl = URL.createObjectURL(file);
 
-            // 清除前一個模型
+            // 【關鍵修復 1：重置狀態】清空 input 的值。這樣即使您連續匯入「同一個檔名」的檔案，也能100%觸發載入動作！
+            event.target.value = '';
+
+            // 【關鍵修復 2：深度清理】清除前一個模型時，徹底釋放 GPU 記憶體，防止手機瀏覽器記憶體耗盡而無反應
             if (currentModel) {
                 scene.remove(currentModel);
+                currentModel.traverse(function(child) {
+                    // 銷毀幾何體
+                    if (child.geometry) {
+                        child.geometry.dispose();
+                    }
+                    // 銷毀材質與貼圖
+                    if (child.material) {
+                        if (Array.isArray(child.material)) {
+                            child.material.forEach(mat => mat.dispose());
+                        } else {
+                            child.material.dispose();
+                        }
+                    }
+                });
                 currentModel = null;
             }
 
