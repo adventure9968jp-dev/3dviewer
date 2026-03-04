@@ -52,7 +52,10 @@
 
             <!-- 開關區縮小並與匯入按鈕並排 -->
             <div class="flex gap-4 text-gray-300 text-[12px] flex-shrink-0 items-center border-l border-gray-700 pl-3">
-                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="zUpToggle" checked class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 🔄 Z軸校正</label>
+                <!-- 【關鍵修正】移除預設 checked，讓模型預設保持原始方向 -->
+                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="zUpToggle" class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 🔄 Z軸校正</label>
+                <!-- 【新增】平行投影切換開關 -->
+                <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="cameraToggle" class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 📐 平行投影</label>
                 <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="edgeToggle" checked class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 🔲 輪廓線</label>
                 <label class="flex items-center cursor-pointer hover:text-white whitespace-nowrap"><input type="checkbox" id="xrayToggle" class="mr-1 form-checkbox h-3.5 w-3.5 text-blue-500 rounded bg-gray-700 border-gray-600"> 👁️ X-Ray透視</label>
             </div>
@@ -82,9 +85,26 @@
         // 加入柔和的背景色
         scene.background = new THREE.Color(0x2a2a2a); 
 
-        // 寬高計算改為相依於上方的顯示區容器
-        const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 1000);
-        camera.position.set(0, 5, 10);
+        // 【升級】雙攝影機架構 (透視圖 與 平行投影)
+        let cameraPersp, cameraOrtho, camera;
+        let frustumSize = 15; // 平行投影的視椎體基礎大小
+
+        const aspect = container.clientWidth / container.clientHeight;
+        
+        // 透視攝影機 (符合人眼近大遠小的視覺)
+        cameraPersp = new THREE.PerspectiveCamera(45, aspect, 0.1, 1000);
+        cameraPersp.position.set(0, 5, 10);
+
+        // 平行投影攝影機 (無透視變形，適合工程視圖)
+        cameraOrtho = new THREE.OrthographicCamera(
+            -frustumSize * aspect / 2, frustumSize * aspect / 2,
+            frustumSize / 2, -frustumSize / 2,
+            0.1, 1000
+        );
+        cameraOrtho.position.set(0, 5, 10);
+
+        // 預設啟用透視攝影機
+        camera = cameraPersp;
 
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(container.clientWidth, container.clientHeight);
@@ -265,12 +285,26 @@
             let cameraZ = Math.abs(targetSize / 2 / Math.tan(fov / 2));
             cameraZ *= 1.5; // 加上一點緩衝空間
             optimalCameraDistance = cameraZ; // 儲存此距離
+            
+            // 計算平行投影所需的視角寬度
+            frustumSize = targetSize * 1.5;
+            const currentAspect = container.clientWidth / container.clientHeight;
 
-            // 確保攝影機的遠截面 (far plane) 足夠深，並更新矩陣
-            camera.far = cameraZ * 10;
-            camera.updateProjectionMatrix();
+            // 同步更新透視攝影機
+            cameraPersp.far = cameraZ * 10;
+            cameraPersp.position.set(0, targetSize / 2, cameraZ);
+            cameraPersp.updateProjectionMatrix();
 
-            // 更新攝影機位置與控制器目標
+            // 同步更新平行投影攝影機
+            cameraOrtho.far = cameraZ * 10;
+            cameraOrtho.left = -frustumSize * currentAspect / 2;
+            cameraOrtho.right = frustumSize * currentAspect / 2;
+            cameraOrtho.top = frustumSize / 2;
+            cameraOrtho.bottom = -frustumSize / 2;
+            cameraOrtho.position.set(0, targetSize / 2, cameraZ);
+            cameraOrtho.updateProjectionMatrix();
+
+            // 更新當前啟用的攝影機與控制器目標
             camera.position.set(0, targetSize / 2, cameraZ);
             controls.target.set(0, 0, 0);
             controls.update();
@@ -285,10 +319,37 @@
         // 6. 視窗大小改變時自動適應 (適應手機翻轉或尺寸變化)
         window.addEventListener('resize', onWindowResize, false);
         function onWindowResize() {
-            camera.aspect = container.clientWidth / container.clientHeight;
-            camera.updateProjectionMatrix();
+            const aspect = container.clientWidth / container.clientHeight;
+            
+            // 同步更新兩種攝影機的比例
+            cameraPersp.aspect = aspect;
+            cameraPersp.updateProjectionMatrix();
+            
+            cameraOrtho.left = -frustumSize * aspect / 2;
+            cameraOrtho.right = frustumSize * aspect / 2;
+            cameraOrtho.top = frustumSize / 2;
+            cameraOrtho.bottom = -frustumSize / 2;
+            cameraOrtho.updateProjectionMatrix();
+
             renderer.setSize(container.clientWidth, container.clientHeight);
         }
+
+        // 【新增】監聽攝影機切換開關，實現透視/平行無縫切換
+        document.getElementById('cameraToggle').addEventListener('change', function(e) {
+            const isOrtho = e.target.checked;
+            const prevCamera = camera;
+            
+            // 切換指標
+            camera = isOrtho ? cameraOrtho : cameraPersp;
+
+            // 完美複製前一台攝影機的位置與旋轉角度，確保切換時畫面不跳動
+            camera.position.copy(prevCamera.position);
+            camera.quaternion.copy(prevCamera.quaternion);
+
+            // 將控制權轉交給新攝影機
+            controls.object = camera;
+            controls.update();
+        });
 
         // 【新增】監聽輪廓線開關事件，實現即時切換
         document.getElementById('edgeToggle').addEventListener('change', function(e) {
@@ -322,6 +383,31 @@
                         });
                     }
                 });
+            }
+        });
+
+        // 【新增】監聽 Z軸校正 開關事件，實現即時翻轉與重新置中
+        document.getElementById('zUpToggle').addEventListener('change', function(e) {
+            if (currentModel) {
+                // 1. 先將位置歸零，確保翻轉基準點正確
+                currentModel.position.set(0, 0, 0);
+                
+                // 2. 套用/取消 90度翻轉 (將 Z軸向上 轉為 Y軸向上)
+                currentModel.rotation.x = e.target.checked ? -Math.PI / 2 : 0;
+                currentModel.updateMatrixWorld(true);
+
+                // 3. 重新計算翻轉後的新邊界與中心點
+                const box = new THREE.Box3().setFromObject(currentModel);
+                const center = box.getCenter(new THREE.Vector3());
+
+                // 4. 再次將模型完美置中於畫面
+                currentModel.position.x -= center.x;
+                currentModel.position.y -= center.y;
+                currentModel.position.z -= center.z;
+                
+                // 5. 強制更新畫面與控制器
+                controls.update();
+                renderer.render(scene, camera);
             }
         });
 
