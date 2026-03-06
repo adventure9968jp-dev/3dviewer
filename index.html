@@ -505,7 +505,7 @@
 
         // 動態生成 HTML 註解卡片函數 (支援載入已有資料)
         function createAnnotation(position, existingData = null) {
-            // 【升級】尋找目前最大的流水號，使用 parseInt 確保即使使用者自訂了英文名稱，自動數字依然能正確遞增
+            // 尋找目前最大的流水號
             let currentMax = 0;
             annotationsDataList.forEach(item => {
                 const num = parseInt(item.markerNumber, 10);
@@ -514,28 +514,35 @@
                 }
             });
 
-            // 資料綁定模型
+            // 資料綁定模型 (【升級】支援多圖 images 陣列)
             const data = existingData || {
                 id: Date.now().toString() + Math.random().toString(),
                 position: { x: position.x, y: position.y, z: position.z },
                 text: '',
-                image: '',
-                markerNumber: (currentMax + 1).toString() // 給予自動遞增的流水號，轉為字串以利編輯
+                images: [], // 升級為陣列
+                markerNumber: (currentMax + 1).toString() 
             };
             
-            // 相容舊版無編號的紀錄檔 (自動為舊資料補上流水號)
+            // 相容舊版無編號的紀錄檔
             if (existingData && !data.markerNumber) {
                 data.markerNumber = (currentMax + 1).toString();
-                currentMax++; // 確保同批次匯入的舊資料號碼會持續遞增
+                currentMax++; 
+            }
+            // 【向下相容】將舊版專案檔的單一 image 轉換為新的多圖 images 陣列
+            if (existingData && existingData.image && !existingData.images) {
+                data.images = [existingData.image];
+                delete data.image; // 轉移後刪除舊欄位避免冗餘
+            } else if (existingData && !data.images) {
+                data.images = [];
             }
 
-            // 【底層修復】確保不管是新建還是匯入，資料都會進入目前的狀態庫，保證能夠再次匯出
+            // 確保資料進入狀態庫
             if (!annotationsDataList.find(item => item.id === data.id)) {
                 annotationsDataList.push(data);
             }
 
             // ==========================================
-            // 元件 1：3D 空間中的標記按鈕 (受 Three.js 座標控制)
+            // 元件 1：3D 空間中的標記按鈕
             // ==========================================
             const annotationDiv = document.createElement('div');
             annotationDiv.style.width = '28px';
@@ -545,160 +552,198 @@
             const markerBtn = document.createElement('div');
             markerBtn.style.width = '100%';
             markerBtn.style.height = '100%';
-            // 若文字較長(如中文字)，設定 overflow-hidden 避免破壞圓形
             markerBtn.className = 'bg-blue-600 rounded-full border-2 border-white shadow-[0_0_10px_rgba(0,0,0,0.5)] cursor-pointer flex items-center justify-center text-white font-bold text-sm transition-transform hover:scale-110 z-10 overflow-hidden whitespace-nowrap text-ellipsis px-1';
-            // 將按鈕文字從 'i' 改為專屬流水編號
             markerBtn.innerText = data.markerNumber;
             annotationDiv.appendChild(markerBtn);
 
-            // 將 HTML 轉換為 Three.js 的 CSS2D 空間物件
             const cssObject = new THREE.CSS2DObject(annotationDiv);
             cssObject.position.set(data.position.x, data.position.y, data.position.z);
             scene.add(cssObject);
             annotationsList.push(cssObject);
 
-
             // ==========================================
-            // 元件 2：獨立於 3D 空間的全螢幕大視窗 (直接掛載於 document.body)
+            // 元件 2：獨立於 3D 空間的全螢幕大視窗
             // ==========================================
             const cardDiv = document.createElement('div');
-            // 【終極進化】放棄 Tailwind 動態類別，改用原生 style 屬性確保尺寸與層級 100% 生效！
             cardDiv.className = 'hidden fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-gray-50 rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] p-5 flex flex-col gap-3 border border-gray-200 overflow-y-auto';
-            
-            // 【極致自適應升級】解放寬度與高度，打造真正的超大編輯視窗！
             cardDiv.style.width = '95vw';
-            cardDiv.style.maxWidth = '1200px'; // 讓大螢幕也能完美展開，不再侷限於 600px
-            cardDiv.style.height = '85vh'; // 強制展開高度，不再因為內容少而萎縮
+            cardDiv.style.maxWidth = '1200px'; 
+            cardDiv.style.height = '85vh'; 
             cardDiv.style.maxHeight = '90vh';
-            cardDiv.style.zIndex = '1000'; // 確保在最上層
+            cardDiv.style.zIndex = '1000'; 
             
             cardDiv.innerHTML = `
                 <div class="flex justify-between items-center border-b border-gray-200 pb-2 flex-shrink-0">
                     <div class="flex items-center gap-2 font-bold text-gray-800 text-lg">
                         📝 標記
-                        <!-- 【升級】將靜態標題轉換為可編輯的輸入框 -->
                         <input type="text" class="marker-name-input w-20 bg-gray-200 hover:bg-gray-300 border border-transparent focus:border-blue-500 rounded px-2 py-0.5 text-center focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors cursor-text text-blue-700" value="${data.markerNumber}" title="點擊自訂標記名稱/編號" />
                     </div>
                     <button class="close-btn text-gray-400 hover:text-red-500 font-bold text-3xl leading-none p-1">✕</button>
                 </div>
-                <input type="file" accept="image/*" class="img-upload flex-shrink-0 text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-blue-100 file:text-blue-700 hover:file:bg-blue-200 w-full cursor-pointer ${data.image ? 'hidden' : ''}"/>
+                <!-- 【升級】加入 multiple 屬性允許多選，並且不再於上傳後隱藏，讓使用者能持續加圖 -->
+                <input type="file" accept="image/*" multiple class="img-upload flex-shrink-0 text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-blue-100 file:text-blue-700 hover:file:bg-blue-200 w-full cursor-pointer"/>
                 
-                <!-- 【極致自適應升級】圖片預覽高度改為 40vh，不再寫死 16rem，讓圖片能根據螢幕高度自適應變大 -->
-                <img class="preview-img ${data.image ? '' : 'hidden'} object-contain shadow-sm flex-shrink-0 transition-all duration-300" style="width: 100%; height: 40vh; background-color: #f3f4f6; cursor: zoom-in; border-radius: 0.5rem; border: 1px solid #e5e7eb;" src="${data.image}" title="點擊放大/縮小" />
+                <!-- 【升級】橫向圖片庫容器 -->
+                <div class="image-gallery flex gap-3 overflow-x-auto py-2 flex-shrink-0 hide-scrollbar items-center min-h-[10px]"></div>
                 
                 <textarea class="w-full flex-1 p-3 text-base border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-700 bg-white leading-relaxed" placeholder="請輸入備註...">${data.text}</textarea>
                 <button class="delete-btn flex-shrink-0 w-full bg-red-50 text-red-600 hover:bg-red-100 py-3 rounded-lg text-sm font-bold transition mt-2 border border-red-100">🗑️ 刪除此標記</button>
             `;
 
-            // 【關鍵綁定】將獨立視窗掛載到最外層的 body，徹底脫鉤！
             document.body.appendChild(cardDiv);
-            data.cardElement = cardDiv; // 記錄在資料中以便未來清理
+            data.cardElement = cardDiv;
 
             // --- 互動事件綁定 ---
-            // 點擊 3D 空間的圓鈕：在螢幕中央展開獨立視窗
             markerBtn.addEventListener('click', (e) => {
                 e.stopPropagation(); 
                 cardDiv.classList.remove('hidden');
             });
 
-            // 【終極修復】圖片全螢幕放大/縮小邏輯 (使用原生 JS 直接操控 CSS，繞過 CDN 編譯限制)
-            const previewImg = cardDiv.querySelector('.preview-img');
-            let isZoomed = false;
-            previewImg.addEventListener('click', (e) => {
-                e.stopPropagation();
-                isZoomed = !isZoomed;
-                if (isZoomed) {
-                    // 強制放大至全螢幕：蓋住所有東西
-                    previewImg.style.position = 'fixed';
-                    previewImg.style.top = '0';
-                    previewImg.style.left = '0';
-                    previewImg.style.width = '100vw';
-                    previewImg.style.height = '100%'; // 使用 100% 配合 fixed 完美適應所有設備
-                    previewImg.style.backgroundColor = 'rgba(0,0,0,0.95)';
-                    previewImg.style.zIndex = '9999';
-                    
-                    // 【關鍵修復】移除所有 padding，把黑邊全部拔掉，讓圖片 100% 榨乾螢幕邊緣！
-                    previewImg.style.padding = '0'; 
-                    previewImg.style.cursor = 'zoom-out';
-                    previewImg.style.borderRadius = '0';
-                    previewImg.style.border = 'none';
-                } else {
-                    // 恢復視窗內原狀大小
-                    previewImg.style.position = 'static';
-                    previewImg.style.width = '100%';
-                    previewImg.style.height = '40vh'; // 對應修改後的自適應高度
-                    previewImg.style.backgroundColor = '#f3f4f6';
-                    previewImg.style.zIndex = 'auto';
-                    previewImg.style.padding = '0';
-                    previewImg.style.cursor = 'zoom-in';
-                    previewImg.style.borderRadius = '0.5rem';
-                    previewImg.style.border = '1px solid #e5e7eb';
-                }
-            });
+            // 【新增】動態渲染多圖相簿的核心邏輯
+            const imageGallery = cardDiv.querySelector('.image-gallery');
+            let currentZoomedImg = null; // 記錄當前正在放大的圖片
 
-            // 點擊 X：關閉獨立視窗並還原圖片大小
+            // 還原圖片尺寸的輔助函數
+            function resetZoom(img) {
+                img.style.position = 'static';
+                img.style.width = '100%';
+                img.style.height = '100%'; 
+                img.style.backgroundColor = '#f3f4f6';
+                img.style.zIndex = 'auto';
+                img.style.padding = '0';
+                img.style.cursor = 'zoom-in';
+                img.style.borderRadius = '0.5rem';
+                img.style.border = '1px solid #e5e7eb';
+                img.style.objectFit = 'cover';
+                currentZoomedImg = null;
+            }
+
+            function renderGallery() {
+                imageGallery.innerHTML = '';
+                if (data.images.length === 0) {
+                    imageGallery.classList.add('hidden');
+                } else {
+                    imageGallery.classList.remove('hidden');
+                    data.images.forEach((base64Data, index) => {
+                        // 建立圖片外層卡片 (設定固定大小，方便橫向排列)
+                        const imgWrapper = document.createElement('div');
+                        imgWrapper.className = 'relative flex-shrink-0 w-32 h-32 sm:w-48 sm:h-48 group';
+                        
+                        // 建立圖片本體
+                        const img = document.createElement('img');
+                        img.src = base64Data;
+                        img.title = '點擊放大/縮小';
+                        img.className = 'w-full h-full object-cover rounded-lg border border-gray-200 shadow-sm cursor-zoom-in transition-all duration-300 bg-gray-100';
+                        
+                        // 每張圖片獨立的放大縮小邏輯
+                        let isZoomed = false;
+                        img.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            isZoomed = !isZoomed;
+                            if (isZoomed) {
+                                // 如果有其他圖片正在放大，先將其縮小
+                                if (currentZoomedImg && currentZoomedImg !== img) {
+                                    resetZoom(currentZoomedImg);
+                                }
+                                // 強制滿版全螢幕
+                                img.style.position = 'fixed';
+                                img.style.top = '0';
+                                img.style.left = '0';
+                                img.style.width = '100vw';
+                                img.style.height = '100%';
+                                img.style.backgroundColor = 'rgba(0,0,0,0.95)';
+                                img.style.zIndex = '9999';
+                                img.style.padding = '0'; 
+                                img.style.cursor = 'zoom-out';
+                                img.style.borderRadius = '0';
+                                img.style.border = 'none';
+                                img.style.objectFit = 'contain';
+                                currentZoomedImg = img;
+                            } else {
+                                resetZoom(img);
+                            }
+                        });
+
+                        // 建立專屬刪除按鈕 (Hover顯示)
+                        const delBtn = document.createElement('button');
+                        delBtn.className = 'absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-7 h-7 flex items-center justify-center text-sm font-bold shadow-md hover:bg-red-600 transition-opacity opacity-0 group-hover:opacity-100 z-10';
+                        delBtn.innerHTML = '✕';
+                        delBtn.title = '移除此圖片';
+                        delBtn.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            data.images.splice(index, 1); // 刪除資料庫內的圖
+                            if (currentZoomedImg === img) currentZoomedImg = null;
+                            renderGallery(); // 重新渲染相簿
+                        });
+
+                        imgWrapper.appendChild(img);
+                        imgWrapper.appendChild(delBtn);
+                        imageGallery.appendChild(imgWrapper);
+                    });
+                }
+            }
+
+            // 初始化時渲染一次相簿
+            renderGallery();
+
+            // 點擊 X 關閉大視窗
             const closeBtn = cardDiv.querySelector('.close-btn');
             closeBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 cardDiv.classList.add('hidden');
-                if (isZoomed) {
-                    isZoomed = false;
-                    previewImg.style.position = 'static';
-                    previewImg.style.width = '100%';
-                    previewImg.style.height = '40vh';
-                    previewImg.style.backgroundColor = '#f3f4f6';
-                    previewImg.style.zIndex = 'auto';
-                    previewImg.style.padding = '0';
-                    previewImg.style.cursor = 'zoom-in';
-                    previewImg.style.borderRadius = '0.5rem';
-                    previewImg.style.border = '1px solid #e5e7eb';
+                // 若有放大的圖片，一併退回原狀
+                if (currentZoomedImg) {
+                    resetZoom(currentZoomedImg);
                 }
             });
 
-            // 【新增】監聽標記名稱/編號的修改，即時更新 3D 空間中的按鈕文字
+            // 監聽標記名稱/編號的修改
             const markerNameInput = cardDiv.querySelector('.marker-name-input');
             markerNameInput.addEventListener('input', (e) => {
                 const newVal = e.target.value.trim();
-                data.markerNumber = newVal; // 更新資料模型以供匯出
-                // 若清空則顯示驚嘆號防呆，否則即時變更藍色圓鈕文字
+                data.markerNumber = newVal; 
                 markerBtn.innerText = newVal !== '' ? newVal : '!'; 
             });
 
-            // 文字變更時，即時寫入資料模型
+            // 文字變更
             const textarea = cardDiv.querySelector('textarea');
             textarea.addEventListener('input', (e) => {
                 data.text = e.target.value;
             });
 
-            // 刪除邏輯：除了清除 3D 物件，也要把掛載在 body 的大視窗拔除
+            // 刪除整個註解
             const deleteBtn = cardDiv.querySelector('.delete-btn');
             deleteBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                scene.remove(cssObject); // 移除 3D 標籤
+                scene.remove(cssObject); 
                 annotationDiv.remove();
-                cardDiv.remove(); // 移除 2D 獨立視窗
+                cardDiv.remove(); 
                 annotationsList = annotationsList.filter(item => item !== cssObject);
                 annotationsDataList = annotationsDataList.filter(item => item.id !== data.id);
             });
 
-            // 圖片上傳預覽邏輯
+            // 【升級】多圖上傳核心邏輯
             const imgUpload = cardDiv.querySelector('.img-upload');
             imgUpload.addEventListener('change', (e) => {
-                const file = e.target.files[0];
-                if(file) {
-                    const reader = new FileReader();
-                    reader.onload = (re) => {
-                        const base64Data = re.target.result;
-                        previewImg.src = base64Data;
-                        previewImg.classList.remove('hidden');
-                        imgUpload.classList.add('hidden');
-                        data.image = base64Data;
-                    };
-                    reader.readAsDataURL(file); 
+                const files = Array.from(e.target.files);
+                if(files.length > 0) {
+                    let loadedCount = 0;
+                    files.forEach(file => {
+                        const reader = new FileReader();
+                        reader.onload = (re) => {
+                            data.images.push(re.target.result); // 加入多圖陣列
+                            loadedCount++;
+                            // 確認所有選擇的圖都讀取完畢後再渲染，避免畫面閃爍
+                            if (loadedCount === files.length) {
+                                renderGallery();
+                                imgUpload.value = ''; // 重置 input 狀態，允許重複選擇
+                            }
+                        };
+                        reader.readAsDataURL(file); 
+                    });
                 }
             });
 
-            // 防止在卡片上滑動時觸發背後 3D 攝影機的旋轉
             cardDiv.addEventListener('pointerdown', (e) => e.stopPropagation());
             annotationDiv.addEventListener('pointerdown', (e) => e.stopPropagation());
         }
