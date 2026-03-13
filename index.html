@@ -750,104 +750,86 @@
             annotationDiv.addEventListener('pointerdown', (e) => e.stopPropagation());
         }
 
-        // 【終極進化】實作匯出紀錄邏輯 (將 模型 + 註解資料 打包成標準 .zip 專案檔)
+        // 【終極進化】實作匯出紀錄邏輯 (強制使用專屬的 .3dproj 格式匯出)
         document.getElementById('exportBtn').addEventListener('click', () => {
             if (!currentModelArrayBuffer) {
                 alert('請先匯入模型後再進行匯出！');
                 return;
             }
             
-            // 使用內建的 fflate 庫，將模型二進位檔與註解 JSON 壓縮成一個 ZIP 檔
+            // 使用內建的 fflate 庫，將模型二進位檔與註解 JSON 壓縮成一個打包檔
             const annotationsStr = JSON.stringify(annotationsDataList);
             const zippedData = fflate.zipSync({
                 [`model.${currentModelExt}`]: new Uint8Array(currentModelArrayBuffer),
                 "annotations.json": fflate.strToU8(annotationsStr)
             });
 
-            // 【終極 iOS 修復】匯出為標準的 .zip 副檔名，確保 iPhone 原生檔案總管能夠識別且允許點選
-            const blob = new Blob([zippedData], { type: "application/zip" });
+            // 強制設定為 octet-stream 二進位流，並指定專屬副檔名 .3dproj
+            const blob = new Blob([zippedData], { type: "application/octet-stream" });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'project_record.zip';
+            a.download = 'project_record.3dproj';
             a.click();
             URL.revokeObjectURL(url);
         });
 
-        // 【終極進化】實作匯入紀錄邏輯 (支援自動解壓並還原 模型與註解)
+        // 【終極進化】實作匯入紀錄邏輯 (嚴格限定僅能讀取 .3dproj 專案檔)
         document.getElementById('importBtn').addEventListener('change', function(event) {
             const file = event.target.files[0];
             if (!file) return;
             event.target.value = ''; // 重置狀態
 
             const filename = file.name.toLowerCase();
-            const isProjectFile = filename.endsWith('.3dproj') || filename.endsWith('.zip');
+            
+            // 嚴格阻擋非 .3dproj 的檔案
+            if (!filename.endsWith('.3dproj')) {
+                alert('格式錯誤：請匯入標準的 .3dproj 專案紀錄檔！');
+                return;
+            }
 
             const reader = new FileReader();
             reader.onload = function(e) {
-                if (isProjectFile) {
-                    try {
-                        // 解壓縮 .3dproj 檔案
-                        const unzipped = fflate.unzipSync(new Uint8Array(e.target.result));
-                        let modelExt = '';
-                        let modelData = null;
-                        let annotationsData = null;
+                try {
+                    // 解壓縮 .3dproj 檔案
+                    const unzipped = fflate.unzipSync(new Uint8Array(e.target.result));
+                    let modelExt = '';
+                    let modelData = null;
+                    let annotationsData = null;
 
-                        // 從壓縮包內抽出模型與註解資料
-                        for (const key in unzipped) {
-                            if (key === 'annotations.json') {
-                                annotationsData = JSON.parse(fflate.strFromU8(unzipped[key]));
-                            } else if (key.startsWith('model.')) {
-                                modelExt = key.split('.').pop();
-                                modelData = unzipped[key];
-                            }
+                    // 從壓縮包內抽出模型與註解資料
+                    for (const key in unzipped) {
+                        if (key === 'annotations.json') {
+                            annotationsData = JSON.parse(fflate.strFromU8(unzipped[key]));
+                        } else if (key.startsWith('model.')) {
+                            modelExt = key.split('.').pop();
+                            modelData = unzipped[key];
                         }
-
-                        if (modelData && annotationsData) {
-                            // 1. 清理舊畫面
-                            clearCurrentScene();
-                            loadingIndicator.style.display = 'block';
-                            
-                            // 2. 還原模型快取資料
-                            currentModelArrayBuffer = modelData.buffer;
-                            currentModelExt = modelExt;
-
-                            // 3. 觸發模型載入，並將註解資料傳入等待還原
-                            const blob = new Blob([modelData]);
-                            const objUrl = URL.createObjectURL(blob);
-                            executeModelLoad(objUrl, modelExt, annotationsData);
-                        } else {
-                            alert('專案檔格式錯誤，找不到模型或註解資料！');
-                        }
-                    } catch (err) {
-                        alert('解析專案檔失敗！檔案可能已損毀。');
-                        console.error(err);
                     }
-                } else {
-                    // 相容舊版的純 JSON 匯入邏輯
-                    if (!currentModel) {
-                        alert('純 .json 紀錄檔需要先匯入 3D 模型才能掛載標記！');
-                        return;
-                    }
-                    try {
-                        // 使用 TextDecoder 將 ArrayBuffer 轉回字串
-                        const jsonStr = new TextDecoder().decode(e.target.result);
-                        const importedData = JSON.parse(jsonStr);
-                        if (!Array.isArray(importedData)) throw new Error("資料格式錯誤");
+
+                    if (modelData && annotationsData) {
+                        // 1. 清理舊畫面
+                        clearCurrentScene();
+                        loadingIndicator.style.display = 'block';
                         
-                        importedData.forEach(data => {
-                            const pos = new THREE.Vector3(data.position.x, data.position.y, data.position.z);
-                            createAnnotation(pos, data);
-                        });
-                        alert(`成功匯入了 ${importedData.length} 筆註解紀錄！`);
-                    } catch(err) {
-                        alert('匯入失敗：這似乎不是有效的註解紀錄檔 (.json)。');
-                        console.error(err);
+                        // 2. 還原模型快取資料
+                        currentModelArrayBuffer = modelData.buffer;
+                        currentModelExt = modelExt;
+
+                        // 3. 觸發模型載入，並將註解資料傳入等待還原
+                        const blob = new Blob([modelData]);
+                        const objUrl = URL.createObjectURL(blob);
+                        executeModelLoad(objUrl, modelExt, annotationsData);
+                    } else {
+                        alert('專案檔格式錯誤，找不到模型或註解資料！');
                     }
+                } catch (err) {
+                    alert('解析專案檔失敗！檔案可能已損毀或格式不正確。');
+                    console.error(err);
                 }
             };
             
-            // 統一使用 ArrayBuffer 讀取，以支援二進位解壓縮
+            // 統一使用 ArrayBuffer 讀取二進位資料
             reader.readAsArrayBuffer(file);
         });
 
