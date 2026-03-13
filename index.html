@@ -206,7 +206,11 @@
         // 【關鍵修復】將控制器重新綁定回底層的 WebGL 畫布 (renderer.domElement)，恢復旋轉與縮放功能
         const controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true; // 啟用阻尼（慣性），讓旋轉更滑順
-        controls.dampingFactor = 0.05;
+        
+        // 【操作手感極致優化】增加摩擦力並降低靈敏度，解決「太滑」的問題
+        controls.dampingFactor = 0.15; // 從 0.05 提高至 0.15，增加煞車力道，手感更沉穩
+        controls.rotateSpeed = 0.8;    // 降低 20% 旋轉靈敏度，避免輕輕一撥就轉過頭
+        controls.panSpeed = 0.8;       // 降低 20% 平移靈敏度，讓雙指拖曳更精準
 
         // 建立一個變數來儲存當前的模型，以便載入新模型時可以移除舊的
         let currentModel = null;
